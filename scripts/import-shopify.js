@@ -1,152 +1,80 @@
 /*
- * Import Shopify product + inventory CSV exports into the Seiszn SQLite DB.
- *
+ * Import Shopify product + inventory CSV exports into Supabase.
  * Usage:
- *   node scripts/import-shopify.js /path/to/products_export.csv /path/to/inventory_export.csv
+ *   node scripts/import-shopify.js products_export.csv [inventory_export.csv] [--overwrite]
  *
- * - Groups Shopify's per-variant rows by Handle into one product per handle.
- * - Combines Color/Size options into a single "sizes" selector (e.g. "Dusty Mauve / M").
- * - Sums stock across variants from the inventory export (falls back to the
- *   products export's Variant Inventory Qty if no inventory file is given).
- * - Uses the first variant's price and image as the product's price/image.
- * - Strips HTML from the description.
- * - Skips products that already exist (matched by slug) unless --overwrite is passed.
+ * Requires SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY.
  */
 const fs = require("fs");
-const path = require("path");
 const { parse } = require("csv-parse/sync");
-const Database = require("better-sqlite3");
 
-const args = process.argv.slice(2);
-const overwrite = args.includes("--overwrite");
-const files = args.filter((a) => !a.startsWith("--"));
-const [productsPath, inventoryPath] = files;
-
-if (!productsPath) {
-  console.error("Usage: node scripts/import-shopify.js <products_export.csv> [inventory_export.csv] [--overwrite]");
-  process.exit(1);
-}
-
-function stripHtml(html) {
-  if (!html) return "";
-  return html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function slugify(str) {
-  return str
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
-
-const productsCsv = fs.readFileSync(productsPath, "utf-8");
-const productRows = parse(productsCsv, { columns: true, skip_empty_lines: true });
-
-let inventoryRows = [];
-if (inventoryPath && fs.existsSync(inventoryPath)) {
-  const inventoryCsv = fs.readFileSync(inventoryPath, "utf-8");
-  inventoryRows = parse(inventoryCsv, { columns: true, skip_empty_lines: true });
-}
-
-// Sum "Available" stock per handle from the inventory export
-const stockByHandle = {};
-for (const row of inventoryRows) {
-  const handle = row["Handle"];
-  const available = parseInt(row["Available (not editable)"], 10) || 0;
-  stockByHandle[handle] = (stockByHandle[handle] || 0) + available;
-}
-
-// Group product rows by Handle
-const byHandle = {};
-for (const row of productRows) {
-  const handle = row["Handle"];
-  if (!handle) continue;
-  if (!byHandle[handle]) byHandle[handle] = [];
-  byHandle[handle].push(row);
-}
-
-const db = new Database(path.join(process.cwd(), "data", "seiszn.db"));
-
-const insertStmt = db.prepare(
-  `INSERT INTO products (slug, name, description, price, image_url, sizes, stock, active)
-   VALUES (@slug, @name, @description, @price, @image_url, @sizes, @stock, @active)`
-);
-const updateStmt = db.prepare(
-  `UPDATE products SET name=@name, description=@description, price=@price, image_url=@image_url, sizes=@sizes, stock=@stock, active=@active WHERE slug=@slug`
-);
-const existsStmt = db.prepare("SELECT id FROM products WHERE slug = ?");
-
-let created = 0;
-let updated = 0;
-let skipped = 0;
-const multiPriceWarnings = [];
-
-for (const [handle, rows] of Object.entries(byHandle)) {
-  const first = rows.find((r) => r["Title"]) || rows[0];
-  const name = first["Title"];
-  if (!name) {
-    skipped++;
-    continue;
+async function main() {
+  const args = process.argv.slice(2);
+  const overwrite = args.includes("--overwrite");
+  const files = args.filter((a) => !a.startsWith("--"));
+  const [productsPath, inventoryPath] = files;
+  if (!productsPath) {
+    console.error("Usage: node scripts/import-shopify.js <products_export.csv> [inventory_export.csv] [--overwrite]");
+    process.exit(1);
   }
-  const slug = slugify(handle);
-  const description = stripHtml(first["Body (HTML)"]);
 
-  // Collect option labels across all variant rows for this handle
-  const labels = rows
-    .map((r) => {
-      const parts = [r["Option1 Value"], r["Option2 Value"], r["Option3 Value"]].filter(
-        (v) => v && v.trim()
-      );
-      return parts.join(" / ");
-    })
-    .filter((v) => v);
-  const sizes = [...new Set(labels)];
-  if (sizes.length === 0) sizes.push("Default");
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) throw new Error("Missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  const { createClient } = await import("@supabase/supabase-js");
+  const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 
-  // Price: use the first non-empty variant price found; warn if variants differ
-  const prices = [...new Set(rows.map((r) => r["Variant Price"]).filter((p) => p))];
-  if (prices.length > 1) {
-    multiPriceWarnings.push(`${slug} (prices: ${prices.join(", ")}) — used ${prices[0]}, review in admin`);
+  const stripHtml = (html) => (html || "").replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+  const slugify = (str) => str.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const productRows = parse(fs.readFileSync(productsPath, "utf-8"), { columns: true, skip_empty_lines: true });
+  const inventoryRows = inventoryPath && fs.existsSync(inventoryPath) ? parse(fs.readFileSync(inventoryPath, "utf-8"), { columns: true, skip_empty_lines: true }) : [];
+
+  const stockByHandle = {};
+  for (const row of inventoryRows) {
+    const handle = row["Handle"];
+    const available = parseInt(row["Available (not editable)"], 10) || 0;
+    stockByHandle[handle] = (stockByHandle[handle] || 0) + available;
   }
-  const price = Math.round(parseFloat(prices[0] || "0") * 100);
+  const byHandle = {};
+  for (const row of productRows) {
+    if (!row["Handle"]) continue;
+    (byHandle[row["Handle"]] ||= []).push(row);
+  }
 
-  // Image: first row with a non-empty Image Src
-  const imageRow = rows.find((r) => r["Image Src"]);
-  const image_url = imageRow ? imageRow["Image Src"] : "";
+  let created = 0, updated = 0, skipped = 0;
+  const warnings = [];
+  for (const [handle, rows] of Object.entries(byHandle)) {
+    const first = rows.find((r) => r["Title"]) || rows[0];
+    if (!first["Title"]) { skipped++; continue; }
+    const labels = [...new Set(rows.map((r) => [r["Option1 Value"], r["Option2 Value"], r["Option3 Value"]].filter((v) => v && v.trim()).join(" / ")).filter(Boolean))];
+    if (!labels.length) labels.push("Default");
+    const prices = [...new Set(rows.map((r) => r["Variant Price"]).filter(Boolean))];
+    if (prices.length > 1) warnings.push(`${slugify(handle)} has variant prices: ${prices.join(", ")}`);
+    const imageRow = rows.find((r) => r["Image Src"]);
+    const record = {
+      slug: slugify(handle), name: first["Title"], description: stripHtml(first["Body (HTML)"]),
+      price: Math.round(parseFloat(prices[0] || "0") * 100), image_url: imageRow ? imageRow["Image Src"] : "",
+      sizes: labels, stock: stockByHandle[handle] !== undefined ? stockByHandle[handle] : rows.reduce((s, r) => s + (parseInt(r["Variant Inventory Qty"], 10) || 0), 0),
+      active: (first["Status"] || "").toLowerCase() === "active",
+    };
 
-  // Stock: prefer inventory export sum, fall back to summed Variant Inventory Qty
-  const stock =
-    stockByHandle[handle] !== undefined
-      ? stockByHandle[handle]
-      : rows.reduce((sum, r) => sum + (parseInt(r["Variant Inventory Qty"], 10) || 0), 0);
-
-  const active = (first["Status"] || "").toLowerCase() === "active" ? 1 : 0;
-
-  const record = { slug, name, description, price, image_url, sizes: JSON.stringify(sizes), stock, active };
-
-  const existing = existsStmt.get(slug);
-  if (existing) {
-    if (overwrite) {
-      updateStmt.run(record);
-      updated++;
+    const { data: existing, error: lookupError } = await supabase.from("products").select("id").eq("slug", record.slug).maybeSingle();
+    if (lookupError) throw lookupError;
+    if (existing) {
+      if (overwrite) {
+        const { error } = await supabase.from("products").update(record).eq("id", existing.id);
+        if (error) throw error;
+        updated++;
+      } else skipped++;
     } else {
-      skipped++;
+      const { error } = await supabase.from("products").insert(record);
+      if (error) throw error;
+      created++;
     }
-  } else {
-    insertStmt.run(record);
-    created++;
   }
+
+  console.log(`Import complete: ${created} created, ${updated} updated, ${skipped} skipped.`);
+  if (warnings.length) console.log(`\nReview variant pricing:\n- ${warnings.join("\n- ")}`);
 }
 
-console.log(`\nImport complete: ${created} created, ${updated} updated, ${skipped} skipped.`);
-if (multiPriceWarnings.length) {
-  console.log(`\n${multiPriceWarnings.length} product(s) had variants with different prices — only the first price was used, review these in /admin:`);
-  multiPriceWarnings.forEach((w) => console.log(`  - ${w}`));
-}
-console.log("\nDone. Restart the app (or refresh) to see the imported products.");
+main().catch((err) => { console.error(err); process.exit(1); });

@@ -1,13 +1,19 @@
-import db from "@/lib/db";
+import { getSupabase } from "@/lib/db";
 import { notFound } from "next/navigation";
 import ProductDetailClient from "./ProductDetailClient";
 
 export const dynamic = "force-dynamic";
 
-export default async function ProductPage({ params }) {
+export default async function ProductPage({ params }){
+  const supabase = getSupabase();
   const { slug } = await params;
-  const product = db.prepare("SELECT * FROM products WHERE slug = ? AND active = 1").get(slug);
+  const { data: product, error } = await supabase
+    .from("products")
+    .select("*")
+    .eq("slug", slug)
+    .eq("active", true)
+    .maybeSingle();
+  if (error) throw error;
   if (!product) notFound();
-  const parsed = { ...product, sizes: JSON.parse(product.sizes) };
-  return <ProductDetailClient product={parsed} />;
+  return <ProductDetailClient product={product} />;
 }

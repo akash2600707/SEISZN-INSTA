@@ -1,33 +1,43 @@
-import db from "@/lib/db";
+import { getSupabase } from "@/lib/db";
 import { requireAdmin } from "@/lib/require-admin";
 import { NextResponse } from "next/server";
 
-export async function PATCH(req, { params }) {
+export const runtime = "nodejs";
+
+export async function PATCH(req, { params }){
+  const supabase = getSupabase();
   const unauth = requireAdmin(req);
   if (unauth) return unauth;
-  const { id } = await params;
-  const body = await req.json();
-  const allowed = ["name", "description", "price", "image_url", "sizes", "stock", "active"];
-  const fields = [];
-  const values = {};
-  for (const key of allowed) {
-    if (key in body) {
-      fields.push(`${key} = @${key}`);
-      values[key] = key === "sizes" ? JSON.stringify(body[key]) : body[key];
+  try {
+    const { id } = await params;
+    const body = await req.json();
+    const allowed = ["name", "description", "price", "image_url", "sizes", "stock", "active"];
+    const update = {};
+    for (const key of allowed) {
+      if (key in body) update[key] = key === "price" || key === "stock" ? Number(body[key]) : body[key];
     }
+    if (!Object.keys(update).length) return NextResponse.json({ error: "No fields to update" }, { status: 400 });
+
+    const { error } = await supabase.from("products").update(update).eq("id", id);
+    if (error) throw error;
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error("Admin product PATCH error:", err);
+    return NextResponse.json({ error: "Failed to update product" }, { status: 500 });
   }
-  if (fields.length === 0) {
-    return NextResponse.json({ error: "No fields to update" }, { status: 400 });
-  }
-  values.id = id;
-  db.prepare(`UPDATE products SET ${fields.join(", ")} WHERE id = @id`).run(values);
-  return NextResponse.json({ success: true });
 }
 
-export async function DELETE(req, { params }) {
+export async function DELETE(req, { params }){
+  const supabase = getSupabase();
   const unauth = requireAdmin(req);
   if (unauth) return unauth;
-  const { id } = await params;
-  db.prepare("DELETE FROM products WHERE id = ?").run(id);
-  return NextResponse.json({ success: true });
+  try {
+    const { id } = await params;
+    const { error } = await supabase.from("products").delete().eq("id", id);
+    if (error) throw error;
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error("Admin product DELETE error:", err);
+    return NextResponse.json({ error: "Failed to delete product" }, { status: 500 });
+  }
 }

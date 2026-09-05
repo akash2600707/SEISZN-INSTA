@@ -1,9 +1,12 @@
 import Razorpay from "razorpay";
-import db from "@/lib/db";
+import { getSupabase } from "@/lib/db";
 import { generateOrderNumber } from "@/lib/orders";
 import { NextResponse } from "next/server";
 
-export async function POST(req) {
+export const runtime = "nodejs";
+
+export async function POST(req){
+  const supabase = getSupabase();
   try {
     const body = await req.json();
     const { customer_name, phone, email, address, city, state, pincode, items } = body;
@@ -11,42 +14,28 @@ export async function POST(req) {
     if (!customer_name || !phone || !address || !city || !state || !pincode) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
-    if (!items || !Array.isArray(items) || items.length === 0) {
+    if (!Array.isArray(items) || items.length === 0) {
       return NextResponse.json({ error: "Cart is empty" }, { status: 400 });
     }
 
-    // Recompute prices server-side from DB — never trust client-sent prices
-    const productStmt = db.prepare("SELECT * FROM products WHERE slug = ? AND active = 1");
     let subtotal = 0;
     const verifiedItems = [];
     for (const item of items) {
-      const p = productStmt.get(item.slug);
+      const { data: p, error } = await supabase.from("products").select("slug,name,price,stock,sizes").eq("slug", item.slug).eq("active", true).maybeSingle();
+      if (error) throw error;
       if (!p) continue;
-      const qty = Math.max(1, Number(item.qty) || 1);
+      const qty = Math.max(1, Math.floor(Number(item.qty) || 1));
+      if (Number(p.stock) < qty) return NextResponse.json({ error: `${p.name} is out of stock` }, { status: 400 });
       subtotal += p.price * qty;
       verifiedItems.push({ slug: p.slug, name: p.name, price: p.price, size: item.size || null, qty });
     }
-    if (verifiedItems.length === 0) {
-      return NextResponse.json({ error: "No valid items" }, { status: 400 });
-    }
+    if (!verifiedItems.length) return NextResponse.json({ error: "No valid items" }, { status: 400 });
 
     const orderNumber = generateOrderNumber();
+    const razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+    const rzpOrder = await razorpay.orders.create({ amount: subtotal, currency: "INR", receipt: orderNumber });
 
-    const razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET,
-    });
-
-    const rzpOrder = await razorpay.orders.create({
-      amount: subtotal, // in paise
-      currency: "INR",
-      receipt: orderNumber,
-    });
-
-    db.prepare(
-      `INSERT INTO orders (order_number, customer_name, phone, email, address, city, state, pincode, items, subtotal, status, razorpay_order_id)
-       VALUES (@order_number, @customer_name, @phone, @email, @address, @city, @state, @pincode, @items, @subtotal, 'pending', @razorpay_order_id)`
-    ).run({
+    const { error: insertError } = await supabase.from("orders").insert({
       order_number: orderNumber,
       customer_name,
       phone,
@@ -55,20 +44,16 @@ export async function POST(req) {
       city,
       state,
       pincode,
-      items: JSON.stringify(verifiedItems),
+      items: verifiedItems,
       subtotal,
+      status: "pending",
       razorpay_order_id: rzpOrder.id,
     });
+    if (insertError) throw insertError;
 
-    return NextResponse.json({
-      order_number: orderNumber,
-      razorpay_order_id: rzpOrder.id,
-      amount: subtotal,
-      currency: "INR",
-      key_id: process.env.RAZORPAY_KEY_ID,
-    });
+    return NextResponse.json({ order_number: orderNumber, razorpay_order_id: rzpOrder.id, amount: subtotal, currency: "INR", key_id: process.env.RAZORPAY_KEY_ID });
   } catch (err) {
-    console.error(err);
+    console.error("Create order error:", err);
     return NextResponse.json({ error: "Failed to create order" }, { status: 500 });
   }
 }

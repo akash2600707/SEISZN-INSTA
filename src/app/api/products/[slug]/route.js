@@ -1,13 +1,16 @@
-import db from "@/lib/db";
+import { getProductBySlug, parseProduct } from "@/lib/db-helpers";
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+
 export async function GET(req, { params }) {
-  const { slug } = await params;
-  const product = db
-    .prepare("SELECT * FROM products WHERE slug = ? AND active = 1")
-    .get(slug);
-  if (!product) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  try {
+    const { slug } = await params;
+    const product = await getProductBySlug(slug, true);
+    if (!product) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json({ product: parseProduct(product) });
+  } catch (err) {
+    console.error("Product GET error:", err);
+    return NextResponse.json({ error: "Failed to load product" }, { status: 500 });
   }
-  return NextResponse.json({ product: { ...product, sizes: JSON.parse(product.sizes) } });
 }

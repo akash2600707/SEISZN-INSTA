@@ -1,32 +1,26 @@
-import db from "@/lib/db";
+import { getSupabase } from "@/lib/db";
+import { parseOrder } from "@/lib/db-helpers";
 import { NextResponse } from "next/server";
 
-export async function POST(req) {
-  const { order_number, phone } = await req.json();
-  if (!order_number || !phone) {
-    return NextResponse.json({ error: "Order ID and phone required" }, { status: 400 });
-  }
-  const order = db
-    .prepare("SELECT * FROM orders WHERE order_number = ? AND phone = ?")
-    .get(order_number.trim(), phone.trim());
+export const runtime = "nodejs";
 
-  if (!order) {
-    return NextResponse.json({ error: "No order found with those details" }, { status: 404 });
-  }
+export async function POST(req){
+  const supabase = getSupabase();
+  try {
+    const { order_number, phone } = await req.json();
+    if (!order_number || !phone) return NextResponse.json({ error: "Order ID and phone are required" }, { status: 400 });
 
-  return NextResponse.json({
-    order: {
-      order_number: order.order_number,
-      status: order.status,
-      items: JSON.parse(order.items),
-      subtotal: order.subtotal,
-      shiprocket_tracking_id: order.shiprocket_tracking_id,
-      shiprocket_courier: order.shiprocket_courier,
-      created_at: order.created_at,
-      address: order.address,
-      city: order.city,
-      state: order.state,
-      pincode: order.pincode,
-    },
-  });
+    const { data: order, error } = await supabase
+      .from("orders")
+      .select("order_number,customer_name,phone,email,address,city,state,pincode,items,subtotal,status,shiprocket_tracking_id,shiprocket_courier,created_at")
+      .eq("order_number", order_number.trim())
+      .eq("phone", phone.trim())
+      .maybeSingle();
+    if (error) throw error;
+    if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    return NextResponse.json({ order: parseOrder(order) });
+  } catch (err) {
+    console.error("Order tracking error:", err);
+    return NextResponse.json({ error: "Failed to track order" }, { status: 500 });
+  }
 }

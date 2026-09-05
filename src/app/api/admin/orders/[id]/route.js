@@ -1,38 +1,36 @@
-import db from "@/lib/db";
+import { getSupabase } from "@/lib/db";
 import { requireAdmin } from "@/lib/require-admin";
 import { NextResponse } from "next/server";
 import { sendShippingUpdate } from "@/lib/notify";
+import { parseOrder } from "@/lib/db-helpers";
 
-export async function PATCH(req, { params }) {
+export const runtime = "nodejs";
+
+export async function PATCH(req, { params }){
+  const supabase = getSupabase();
   const unauth = requireAdmin(req);
   if (unauth) return unauth;
-  const { id } = await params;
-  const body = await req.json();
-  const { shiprocket_tracking_id, shiprocket_courier, status } = body;
+  try {
+    const { id } = await params;
+    const body = await req.json();
+    const { shiprocket_tracking_id, shiprocket_courier, status } = body;
+    const update = {};
+    if (shiprocket_tracking_id !== undefined) update.shiprocket_tracking_id = shiprocket_tracking_id;
+    if (shiprocket_courier !== undefined) update.shiprocket_courier = shiprocket_courier;
+    if (status !== undefined) update.status = status;
+    if (!Object.keys(update).length) return NextResponse.json({ error: "No fields to update" }, { status: 400 });
 
-  const fields = [];
-  const values = { id };
-  if (shiprocket_tracking_id !== undefined) {
-    fields.push("shiprocket_tracking_id = @shiprocket_tracking_id");
-    values.shiprocket_tracking_id = shiprocket_tracking_id;
-  }
-  if (shiprocket_courier !== undefined) {
-    fields.push("shiprocket_courier = @shiprocket_courier");
-    values.shiprocket_courier = shiprocket_courier;
-  }
-  if (status !== undefined) {
-    fields.push("status = @status");
-    values.status = status;
-  }
-  if (fields.length === 0) {
-    return NextResponse.json({ error: "No fields to update" }, { status: 400 });
-  }
-  db.prepare(`UPDATE orders SET ${fields.join(", ")} WHERE id = @id`).run(values);
+    const { error } = await supabase.from("orders").update(update).eq("id", id);
+    if (error) throw error;
 
-  const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
-  if (status === "shipped" && order) {
-    sendShippingUpdate(order).catch((e) => console.error("notify failed", e));
+    const { data: order, error: orderError } = await supabase.from("orders").select("*").eq("id", id).maybeSingle();
+    if (orderError) throw orderError;
+    if (status === "shipped" && order) {
+      sendShippingUpdate(parseOrder(order)).catch((e) => console.error("notify failed", e));
+    }
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error("Admin order PATCH error:", err);
+    return NextResponse.json({ error: "Failed to update order" }, { status: 500 });
   }
-
-  return NextResponse.json({ success: true });
 }

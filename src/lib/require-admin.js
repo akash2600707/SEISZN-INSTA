@@ -7,5 +7,5 @@ export function requireAdmin(req) {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  return null; // null means OK to proceed
+  return null;
 }

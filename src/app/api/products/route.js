@@ -1,10 +1,21 @@
-import db from "@/lib/db";
+import { getSupabase } from "@/lib/db";
+import { parseProduct } from "@/lib/db-helpers";
 import { NextResponse } from "next/server";
 
-export async function GET() {
-  const products = db
-    .prepare("SELECT * FROM products WHERE active = 1 ORDER BY created_at DESC")
-    .all()
-    .map((p) => ({ ...p, sizes: JSON.parse(p.sizes) }));
-  return NextResponse.json({ products });
+export const runtime = "nodejs";
+
+export async function GET(){
+  const supabase = getSupabase();
+  try {
+    const { data, error } = await supabase
+      .from("products")
+      .select("*")
+      .eq("active", true)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return NextResponse.json({ products: (data || []).map(parseProduct) });
+  } catch (err) {
+    console.error("Products GET error:", err);
+    return NextResponse.json({ error: "Failed to load products" }, { status: 500 });
+  }
 }

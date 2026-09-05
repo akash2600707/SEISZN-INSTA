@@ -19,7 +19,8 @@ export default function AdminLoginPage() {
     if (res.ok) {
       router.push("/admin/dashboard");
     } else {
-      setError("Invalid credentials");
+      const data = await res.json().catch(() => ({}));
+      setError(res.status === 401 ? "Invalid username or password" : (data.error || "Server error. Please try again."));
     }
   }
 
@@ -48,7 +49,7 @@ export default function AdminLoginPage() {
         </button>
       </form>
       <p className="text-xs text-neutral-400 mt-4">
-        Default: admin / change-me-123 — change this in the database after first login.
+        Use the admin username and password configured for the production database.
       </p>
     </div>
   );
