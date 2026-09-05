@@ -4,11 +4,11 @@ import { NextResponse } from "next/server";
 
 export async function POST(req) {
   const { username, password } = await req.json();
-  const admin = db.prepare("SELECT * FROM admins WHERE username = ?").get(username);
-  if (!admin || admin.password_hash !== hashPw(password || "")) {
+  const admin = db.prepare("SELECT * FROM admins WHERE username = ?").get((username || "").trim());
+  if (!admin || admin.password_hash !== hashPw((password || "").trim())) {
     return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
   }
-  const token = signSession(username);
+  const token = signSession((username || "").trim());
   const res = NextResponse.json({ success: true });
   res.cookies.set("seiszn_admin", token, {
     httpOnly: true,

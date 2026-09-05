@@ -49,18 +49,47 @@ example code there:
 - **SMS**: MSG91 (https://msg91.com) or Twilio both work well for Indian
   numbers — add your key, uncomment the matching block.
 
-## Changing the admin password
+## Changing / resetting the admin password
 
-The default admin password is `change-me-123`. To change it, open
-`data/seiszn.db` with any SQLite tool (e.g. `sqlite3 data/seiszn.db` or
-DB Browser for SQLite) and run:
+If login isn't working (e.g. "Invalid credentials" even with the default),
+reset it directly:
 
-```sql
-UPDATE admins SET password_hash = '<sha256 hex of new password>' WHERE username = 'admin';
+```bash
+node scripts/reset-admin.js admin your-new-password
 ```
 
-Or ask Claude to add a "change password" admin page if you'd rather do it
-through the UI.
+Run this from the project root, with the app stopped or running (both fine).
+It updates the password in `data/seiszn.db` — or creates the admin account if
+it doesn't exist yet. Restart the app after.
+
+## Importing your Shopify product export
+
+If you're migrating from Shopify, you can bulk-import your existing catalog
+from a Shopify products export CSV (and optionally an inventory export CSV
+for stock counts):
+
+```bash
+node scripts/import-shopify.js /path/to/products_export.csv /path/to/inventory_export.csv
+```
+
+What it does:
+- Groups Shopify's per-variant rows into one product per Handle
+- Combines Color/Size variant options into a single selector (e.g.
+  "Dusty Mauve / M")
+- Uses the first variant's price and main image for the product
+- Sums stock from the inventory export (or from the products export if you
+  don't pass an inventory file)
+- Strips HTML from the description
+- Skips products that already exist (matched by slug) — pass `--overwrite`
+  to update them instead
+
+Run this **before** starting the app for the first time on a fresh database,
+otherwise 3 sample placeholder products will already be seeded — if that
+happens, just delete them from `/admin` → Products afterward.
+
+If a product had different prices across its variants (e.g. price varies by
+size), the import uses the first price it finds and prints a warning listing
+which products to double check in `/admin`.
 
 ## Deploying
 
